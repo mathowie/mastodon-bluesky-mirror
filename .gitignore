@@ -1,0 +1,28 @@
+# Local credentials; publish only the blank template.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Runtime data, backups, logs, and recovery journals.
+data/
+backups/
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+*.log
+
+# Development caches and machine metadata.
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+._*
+.idea/
+.vscode/

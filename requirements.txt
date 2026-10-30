@@ -1,0 +1,9 @@
+fastapi==0.115.0
+uvicorn==0.30.1
+Mastodon.py==2.3.3
+atproto==0.0.73
+pydantic-settings==2.4.0
+sqlalchemy==2.0.32
+aiohttp==3.9.5
+python-multipart==0.0.9
+Pillow==13.0.0

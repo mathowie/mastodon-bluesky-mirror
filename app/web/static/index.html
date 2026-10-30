@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Masto-BSky Mirror Dashboard</title>
+    <style>
+        body { font-family: system-ui, -apple-system, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; background: #f4f4f9; }
+        .card { background: white; padding: 1.5rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); margin-bottom: 2rem; }
+        h1 { color: #333; }
+        .table-wrap { overflow-x: auto; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid #eee; vertical-align: top; }
+        .status-success { color: #16712b; font-weight: bold; }
+        .status-failed, .status-needs_review { color: #b00020; font-weight: bold; }
+        .status-queued, .status-pending { color: #835800; font-weight: bold; }
+        .error { max-width: 360px; overflow-wrap: anywhere; font-size: 0.9rem; }
+        .notice { min-height: 1.5rem; }
+        .notice[data-error="true"] { color: #b00020; }
+        .btn { background: #0065d2; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; }
+        .btn:hover { background: #004d9e; }
+        .btn:disabled { opacity: .6; cursor: wait; }
+    </style>
+</head>
+<body>
+    <h1>Masto-BSky Mirror</h1>
+    <div class="card">
+        <h2>System Status</h2>
+        <div id="stats">Loading...</div>
+        <p id="image-status" class="notice" role="status" aria-live="polite"></p>
+        <p id="notice" class="notice" role="status" aria-live="polite"></p>
+    </div>
+    <div class="card">
+        <h2>Recent Sync History</h2>
+        <div class="table-wrap">
+            <table>
+                <thead><tr><th>Mastodon ID</th><th>Status</th><th>Thread</th><th>Updated</th><th>Error</th><th>Action</th></tr></thead>
+                <tbody id="history"></tbody>
+            </table>
+        </div>
+    </div>
+    <script>
+        let loading = false;
+        const notice = document.getElementById('notice');
+
+        function notify(message, isError = false) {
+            notice.textContent = message;
+            notice.dataset.error = String(isError);
+        }
+
+        async function requestJSON(url, options = {}) {
+            const response = await fetch(url, {credentials: 'same-origin', ...options});
+            const body = await response.json().catch(() => ({}));
+            if (!response.ok) {
+                throw new Error(typeof body.detail === 'string' ? body.detail : `Request failed (${response.status})`);
+            }
+            return body;
+        }
+
+        function cell(row, text, className) {
+            const td = document.createElement('td');
+            td.textContent = text;
+            if (className) td.className = className;
+            row.appendChild(td);
+            return td;
+        }
+
+        async function loadDashboard() {
+            if (loading) return;
+            loading = true;
+            try {
+                const [stats, history] = await Promise.all([
+                    requestJSON('/dashboard/stats'), requestJSON('/dashboard/history')
+                ]);
+                document.getElementById('stats').textContent =
+                    `Synced: ${stats.total_synced} | Failed: ${stats.failed} | Queued: ${stats.queued || 0} | Processing: ${stats.pending || 0} | Success Rate: ${stats.success_rate}`;
+                const images = stats.image_processing;
+                const imageStatus = document.getElementById('image-status');
+                imageStatus.textContent = images && !images.ready ? images.error : '';
+                imageStatus.dataset.error = String(Boolean(images && !images.ready));
+                const body = document.getElementById('history');
+                body.replaceChildren();
+                for (const entry of history) {
+                    const row = document.createElement('tr');
+                    cell(row, entry.mastodon_id);
+                    const statuses = new Set(['success', 'failed', 'queued', 'pending', 'skipped', 'needs_review']);
+                    cell(row, entry.status.replace(/_/g, ' '), statuses.has(entry.status) ? `status-${entry.status}` : '');
+                    cell(row, entry.parts_total ? `${entry.parts_published}/${entry.parts_total} published` : '—');
+                    cell(row, entry.synced_at ? new Date(entry.synced_at).toLocaleString() : '—');
+                    cell(row, entry.error || '—', 'error');
+                    const action = cell(row, '');
+                    if (entry.status === 'failed') {
+                        const button = document.createElement('button');
+                        button.className = 'btn';
+                        button.textContent = 'Retry';
+                        button.addEventListener('click', () => retry(entry.mastodon_id, button));
+                        action.appendChild(button);
+                    }
+                    body.appendChild(row);
+                }
+            } catch (error) {
+                notify(error.message, true);
+            } finally {
+                loading = false;
+            }
+        }
+
+        async function retry(id, button) {
+            button.disabled = true;
+            try {
+                const result = await requestJSON(`/dashboard/retry/${encodeURIComponent(id)}`, {method: 'POST'});
+                notify(result.message || 'Retry queued.');
+                await loadDashboard();
+            } catch (error) {
+                notify(error.message, true);
+                button.disabled = false;
+            }
+        }
+
+        loadDashboard();
+        setInterval(loadDashboard, 10000);
+    </script>
+</body>
+</html>
