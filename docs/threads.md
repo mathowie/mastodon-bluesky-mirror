@@ -17,6 +17,9 @@ budget separate. Bluesky continues to use the existing settings and API defaults
 4. Generate a user access token using Meta's developer UI and obtain the
    Threads-specific app secret. Meta's page labels and navigation can change;
    follow the current official instructions for your app and account.
+   Look for **User Token Generator** within the app's Threads use-case settings.
+   A token generated there may already be long-lived; check its actual expiry
+   before choosing the import or exchange path below.
 
 Use the app ID and secret for the Threads API of the app. The official
 [Meta sample](https://github.com/fbsamples/threads_api) explicitly distinguishes
@@ -58,6 +61,10 @@ seconds, not a lifetime duration or a date string. Omit that setting for
 short-lived exchange; a blank expiry assignment is invalid. The imported
 token is still verified through `/me` and saved with its account binding.
 `THREADS_USER_ID` can assert an expected account ID; it is not a username.
+Use Meta's reported expiry, available through its official
+[Debug Access Token request](https://www.postman.com/meta/threads/request/34203612-e9a7f46e-e48c-4987-a203-22fb25a4b604).
+An already long-lived token should use this import path; attempting to exchange
+it as a short-lived token can return HTTP `400` even when it is valid.
 
 Verify that the CLI identity is your intended destination. Then set
 `THREADS_ENABLED=true` in private `.env` and recreate the existing service:

@@ -1,8 +1,9 @@
-# Mastodon to Bluesky Mirror
+# Mastodon to Bluesky and Threads Mirror
 
-A self-hosted, single-user crossposter built with Python, FastAPI, SQLite,
-and the documented Mastodon, Bluesky, and optional Threads APIs. Run it with Docker Compose,
-including on a Synology NAS.
+A self-hosted, single-user crossposter that automatically mirrors public
+Mastodon posts to Bluesky and, optionally, Threads. Built with Python, FastAPI,
+SQLite, and the documented platform APIs. Run it with Docker Compose, including
+on a Synology NAS.
 
 ## Current features
 
@@ -10,15 +11,17 @@ including on a Synology NAS.
 - Mirrors public text and links into an existing Bluesky account.
 - Optionally mirrors public text, links, up to four photos with alt text, and
   self-replies to Threads, with independent activation, progress, and retries.
-- Uploads up to four images with their alt text, preserving aspect ratios.
-- Validates and prepares JPEG and PNG images within Bluesky's size limit.
-- Splits long text into ordered Bluesky threads, preferring paragraph, sentence,
-  and clause boundaries, and keeping closing quotes and brackets with their text.
+- Uploads up to four images to Bluesky with their alt text, preserving aspect
+  ratios, and prepares JPEG and PNG images within Bluesky's size limit.
+- Splits long text into ordered posts on each destination, preferring paragraph,
+  sentence, and clause boundaries, and keeping closing quotes and brackets with their text.
   Bluesky retains its 300-character budget; Threads uses 500 characters.
 - Continues public self-replies under their mirrored parent, retaining the
   original conversation root, including when either post spans several parts.
-- Saves each planned post, stable record key, URI, and CID in SQLite before
-  proceeding, with reconciliation after uncertain publication responses.
+- Keeps separate SQLite mappings and checkpoints for each destination:
+  stable record keys and post URIs/CIDs for Bluesky, and media-container and
+  published-post IDs for Threads. Uncertain publication responses are reconciled
+  before retrying.
 - Provides a password-protected history API and a dashboard with errors,
   progress, manual retry controls, and a destination selector. The Threads view
   includes local account and token-expiry status without revealing credentials.
@@ -53,7 +56,7 @@ The worker starts automatically. Original posts become eligible from its
 first activation; self-replies have their own persisted activation cutoff.
 Existing earlier posts are not automatically backfilled. A self-reply needs
 an already-successful mapping for its source parent. Keep the same account
-pair and preserve `data/` across upgrades and restarts.
+configuration and preserve `data/` across upgrades and restarts.
 
 For Mastodon, use a read-only user token that can verify your account and
 read statuses. See the official [Mastodon token guide](https://docs.joinmastodon.org/client/token/).
@@ -63,21 +66,46 @@ For Bluesky, create a dedicated app password in
 See [Synology setup](docs/synology.md), [configuration](docs/configuration.md),
 [optional Threads setup](docs/threads.md), and [backup and restore](docs/backup.md).
 
-Threads is disabled by default. First register a Meta developer app with the
-Threads use case and authorize your own Threads account. With Threads still
-disabled, run the setup helper inside the existing container:
+## Add Threads
 
-```sh
-docker compose exec masto-mirror python -m app.threads_setup
-```
+Threads support includes public text, links, up to four photos with alt text,
+long posts split at natural boundaries within a 500-character budget, and
+self-replies attached to their mirrored parent. Bluesky and Threads have
+separate account bindings, activation times, history, and retry state.
 
-The helper uses private configuration or hidden prompts, exchanges a short-lived
-token for a long-lived token, verifies `/me`, and pins the account ID. It saves
-renewable credentials atomically to private `data/threads-token.json` with mode
-`0600`, prints only identity and expiry, and publishes no posts. A long-lived
-token can instead be imported with an explicit `THREADS_TOKEN_EXPIRES_AT` in
-Unix seconds. Verify the displayed identity before setting `THREADS_ENABLED=true`
-and recreating the service. Normal polling renews the saved token near expiry.
+1. Register a Meta developer app with the **Access the Threads API** use case.
+   Add your own Threads account as a tester, accept the invitation in Threads,
+   and authorize the publishing permissions described in [Threads setup](docs/threads.md).
+   Generate a user token from the **User Token Generator** in the app's Threads
+   use-case settings.
+2. Keep `THREADS_ENABLED=false` in your private `.env`. Uncomment and fill
+   `THREADS_ACCESS_TOKEN`. For a short-lived token, also fill the Threads-specific
+   `THREADS_APP_SECRET`. If Meta has already issued a long-lived token, fill
+   `THREADS_TOKEN_EXPIRES_AT` with its actual absolute Unix expiry in seconds;
+   use Meta's reported expiry rather than calculating a new lifetime.
+3. Run the setup helper inside the existing container:
+
+   ```sh
+   docker compose exec masto-mirror python -m app.threads_setup
+   ```
+
+4. Verify the displayed Threads identity, set `THREADS_ENABLED=true`, and
+   recreate the service to load the updated environment:
+
+   ```sh
+   docker compose up -d --no-build --force-recreate masto-mirror
+   ```
+
+5. Select **Threads** in the dashboard to view its connection status, token
+   expiry, synchronization history, errors, and retry controls. Create a new
+   public Mastodon post to test both destinations.
+
+The setup helper accepts private configuration or hidden prompts, exchanges a
+short-lived token or imports an existing long-lived one, verifies `/me`, and
+pins the account ID. It saves renewable credentials atomically to private
+`data/threads-token.json` with mode `0600`, prints only identity and expiry, and
+publishes no posts. Normal polling renews the saved token near expiry, even
+when no new posts arrive. Preserve this file across restarts and backups.
 For expired or revoked credentials, keep the original account binding and run
 `docker compose exec masto-mirror python -m app.threads_setup --reconnect`.
 Reconnect verifies the original account before replacing the private token file.
@@ -107,7 +135,8 @@ needs no image rebuild. Deploy with `THREADS_ENABLED=false` while Meta registrat
 and authorization are pending; authorize first, then activate future posts.
 Recreate the service when changing its Compose environment values.
 
-Avoid running multiple workers or replicas against the same account pair.
+Avoid running multiple workers or replicas against the same source and
+destination accounts.
 Use your own credentials only after reviewing the configuration; this version
 publishes eligible posts automatically and has no preview-only mode.
 
