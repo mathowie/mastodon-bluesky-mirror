@@ -10,7 +10,8 @@ including on a Synology NAS.
 - Mirrors public text and links into an existing Bluesky account.
 - Uploads up to four images with their alt text, preserving aspect ratios.
 - Validates and prepares JPEG and PNG images within Bluesky's size limit.
-- Splits long text into ordered Bluesky threads.
+- Splits long text into ordered Bluesky threads, preferring paragraph, sentence,
+  and clause boundaries, and keeping closing quotes and brackets with their text.
 - Continues public self-replies under their mirrored parent, retaining the
   original conversation root, including when either post spans several parts.
 - Saves each planned post, stable record key, URI, and CID in SQLite before
