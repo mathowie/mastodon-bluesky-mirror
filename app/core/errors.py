@@ -17,7 +17,8 @@ def describe_error(exc):
         text += ": " + str(message)
     elif response is None and str(exc):
         text += ": " + str(exc)
-    for name in ("MASTODON_ACCESS_TOKEN", "BLUESKY_APP_PASSWORD", "BLUESKY_PASSWORD", "DASHBOARD_PASSWORD"):
+    for name in ("MASTODON_ACCESS_TOKEN", "BLUESKY_APP_PASSWORD", "BLUESKY_PASSWORD", "DASHBOARD_PASSWORD",
+                 "THREADS_ACCESS_TOKEN", "THREADS_APP_SECRET"):
         secret = getattr(settings, name, None)
         if secret:
             text = text.replace(secret, "[REDACTED]")

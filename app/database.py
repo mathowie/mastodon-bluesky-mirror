@@ -35,6 +35,35 @@ class SyncPart(Base):
     bluesky_cid = Column(String, nullable=True)
 
 
+class ThreadsSyncMap(Base):
+    """Threads has its own outcome, activation boundary and retry budget."""
+    __tablename__ = "threads_sync_map"
+    mastodon_id = Column(String, primary_key=True)
+    threads_id = Column(String, nullable=True)
+    permalink = Column(String, nullable=True)
+    account_id = Column(String, nullable=True)
+    synced_at = Column(DateTime, default=datetime.utcnow)
+    status = Column(String, default="pending")
+    error_message = Column(Text, nullable=True)
+    attempt_count = Column(Integer, nullable=False, default=0)
+    next_attempt_at = Column(DateTime, nullable=True)
+
+
+class ThreadsSyncPart(Base):
+    """Frozen Threads payload and durable two-phase publishing checkpoints."""
+    __tablename__ = "threads_sync_parts"
+    mastodon_id = Column(String, primary_key=True)
+    part_index = Column(Integer, primary_key=True)
+    account_id = Column(String, nullable=False)
+    payload_json = Column(Text, nullable=False)
+    source_fingerprint = Column(String, nullable=False)
+    children_json = Column(Text, nullable=False, default="[]")
+    container_id = Column(String, nullable=True)
+    threads_id = Column(String, nullable=True)
+    permalink = Column(String, nullable=True)
+    state = Column(String, nullable=False, default="planned")
+
+
 class SettingsStore(Base):
     __tablename__ = "settings"
     
@@ -67,27 +96,44 @@ def get_self_replies_started_at(db):
     return datetime.fromisoformat(setting.value).astimezone(timezone.utc)
 
 
+def get_threads_started_at(db):
+    """A new destination must not replay earlier Bluesky successes."""
+    setting = db.get(SettingsStore, "threads_started_at")
+    if setting is None:
+        setting = SettingsStore(key="threads_started_at", value=datetime.now(timezone.utc).isoformat())
+        db.add(setting)
+        db.commit()
+    return datetime.fromisoformat(setting.value).astimezone(timezone.utc)
+
+
 def init_db():
     # Run inside the NAS container, where SQLite locking and backup are local.
     legacy_migration = False
     database_name = engine.url.database
     if database_name and database_name != ":memory:":
         database_path = Path(database_name)
-        if database_path.exists() and not inspect(engine).has_table("sync_parts"):
-            legacy_migration = True
+        inspector = inspect(engine)
+        legacy_migration = database_path.exists() and not inspector.has_table("sync_parts")
+        threads_migration = database_path.exists() and not all(
+            inspector.has_table(name) for name in ("threads_sync_map", "threads_sync_parts")
+        )
+        if legacy_migration or threads_migration:
             backup_folder = database_path.parent / "backups"
             backup_folder.mkdir(exist_ok=True)
             stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-            backup_path = backup_folder / f"mirror-before-thread-retries-{stamp}.db"
+            prefix = "thread-retries" if legacy_migration else "threads"
+            backup_path = backup_folder / f"mirror-before-{prefix}-{stamp}.db"
             with closing(sqlite3.connect(database_path.resolve().as_uri() + "?mode=ro", uri=True)) as source:
                 with closing(sqlite3.connect(backup_path)) as target:
                     source.backup(target)
-            logging.getLogger(__name__).info("Created SQLite backup before thread-retry migration")
+            logging.getLogger(__name__).info("Created SQLite backup before schema migration")
     Base.metadata.create_all(bind=engine)
     with SessionLocal() as db:
         get_sync_started_at(db)
         if settings.MIRROR_SELF_REPLIES:
             get_self_replies_started_at(db)
+        if settings.THREADS_ENABLED:
+            get_threads_started_at(db)
         # Recheck on every startup: a crash may commit the new table before
         # older failures were classified. New preparation/source-read failures
         # are safe to retry because no network post preceded their checkpoints.

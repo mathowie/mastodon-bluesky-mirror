@@ -11,6 +11,15 @@ class Settings(BaseSettings):
     BLUESKY_PASSWORD: str | None = None  # Legacy fallback; prefer BLUESKY_APP_PASSWORD
     BLUESKY_APP_PASSWORD: str | None = None
 
+    # Optional Threads destination. Secrets stay in the private environment or
+    # renewable token file; the file is never served by the dashboard.
+    THREADS_ENABLED: bool = False
+    THREADS_ACCESS_TOKEN: str | None = None
+    THREADS_APP_SECRET: str | None = None
+    THREADS_USER_ID: str | None = None
+    THREADS_TOKEN_EXPIRES_AT: int | None = None
+    THREADS_TOKEN_FILE: str = "data/threads-token.json"
+
     # App Configuration
     DATABASE_URL: str = "sqlite:///./mirror.db"
     SYNC_INTERVAL_SECONDS: int = 60

@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import requests
 from atproto import models
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from .errors import describe_error
@@ -14,7 +15,7 @@ from .media import MAX_SOURCE_BYTES, validate_image_inventory
 from .transformer import ContentTransformer
 from ..clients.mastodon import MastodonClient
 from ..clients.bluesky import BlueskyClient, new_record_key
-from ..database import SyncMap, SyncPart, get_sync_started_at, get_self_replies_started_at
+from ..database import SyncMap, SyncPart, ThreadsSyncMap, get_sync_started_at, get_self_replies_started_at, get_threads_started_at
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -32,14 +33,29 @@ class SyncOrchestrator:
     def __init__(self, db: Session, masto=None, bsky=None):
         self.db = db
         self.masto = masto if masto is not None else MastodonClient()
-        self.bsky = bsky if bsky is not None else BlueskyClient()
+        # Login belongs to the destination attempt: a Bluesky outage must not
+        # stop the shared source poll or Threads publication.
+        self.bsky = bsky
         self.transformer = ContentTransformer()
 
     def run_sync_cycle(self):
         logger.info("Starting sync cycle")
         get_sync_started_at(self.db)
-        counts = Counter()
-        jobs = [row.mastodon_id for row in self.db.query(SyncMap).filter(SyncMap.status.in_(["queued", "pending"])).all()]
+        destinations = [("Bluesky", SyncMap, self.process_post)]
+        if settings.THREADS_ENABLED:
+            get_threads_started_at(self.db)
+            if getattr(self, "threads", None) is None:
+                from .threads_syncer import ThreadsOrchestrator
+                self.threads = ThreadsOrchestrator(self.db, self.masto)
+            self.threads.db, self.threads.masto = self.db, self.masto
+            destinations.append(("Threads", ThreadsSyncMap, self.threads.process_post))
+        counts = {name: Counter() for name, model, handler in destinations}
+        jobs = set()
+        for name, model, handler in destinations:
+            query = self.db.query(model).filter(model.status.in_(["queued", "pending"]))
+            if model is ThreadsSyncMap:
+                query = query.filter(or_(model.next_attempt_at.is_(None), model.next_attempt_at <= datetime.utcnow()))
+            jobs.update(row.mastodon_id for row in query.all())
         try:
             posts = self.masto.get_recent_posts(limit=20)
         except Exception as exc:
@@ -52,20 +68,36 @@ class SyncOrchestrator:
             try:
                 by_id[ident] = self.masto.get_status(ident)
             except Exception as exc:
-                row = self.db.get(SyncMap, ident)
-                row.status = "failed"
-                row.error_message = "Source refresh failed: " + describe_error(exc)
+                for name, model, handler in destinations:
+                    row = self.db.get(model, ident)
+                    if row and row.status in {"queued", "pending"}:
+                        if model is ThreadsSyncMap:
+                            if row.next_attempt_at and row.next_attempt_at > datetime.utcnow():
+                                continue
+                            counts[name][self.threads.record_failure(ident, exc)] += 1
+                            continue
+                        row.status = "failed"
+                        row.error_message = "Source refresh failed: " + describe_error(exc)
+                        counts[name]["failed"] += 1
+                        # Commit this destination before another handler rolls
+                        # back its own failed operation.
+                        self.db.commit()
                 self.db.commit()
-                counts["failed"] += 1
         for post in sorted(by_id.values(), key=lambda item: int(item["id"])):
-            try:
-                counts[self.process_post(post)] += 1
-            except Exception as exc:
-                self.db.rollback()
-                counts["failed"] += 1
-                logger.error("Status processing failed: %s", describe_error(exc))
-        logger.info("Sync complete: %d synced, %d already mirrored, %d skipped, %d waiting, %d failed",
-                    counts["synced"], counts["existing"], counts["skipped"], counts["pending"], counts["failed"])
+            for name, model, handler in destinations:
+                try:
+                    counts[name][handler(post)] += 1
+                except Exception as exc:
+                    self.db.rollback()
+                    counts[name]["failed"] += 1
+                    logger.error("%s status processing failed: %s", name, describe_error(exc))
+        for name, counter in counts.items():
+            logger.info("%s sync complete: %d synced, %d already mirrored, %d skipped, %d waiting, %d failed",
+                        name, counter["synced"], counter["existing"], counter["skipped"], counter["pending"], counter["failed"])
+        if settings.THREADS_ENABLED:
+            # Credential renewal must continue through empty timelines and long
+            # periods with no eligible posts. It cannot delay this cycle's posts.
+            self.threads.maintain_credentials()
 
     def _skip(self, ident, reason):
         logger.info("Skipping Mastodon status %s: %s", ident, reason)
@@ -133,6 +165,8 @@ class SyncOrchestrator:
         part_index = None
         total = 0
         try:
+            if self.bsky is None:
+                self.bsky = BlueskyClient()
             reply_context = None
             if parent_id:
                 source_parent = self.masto.get_status(parent_id)

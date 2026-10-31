@@ -43,7 +43,7 @@ def _thread_break_index(text: str, limit: int, start: int) -> int:
     # Prefer natural boundaries in the last 30% of the available space.
     # Sentence matches include closing quotes/brackets and require a word end,
     # so a decimal or a dot/question mark inside a URL is not a sentence break.
-    minimum = start + int(limit * 0.7)
+    minimum = start + max(1, int(limit * 0.7))
     end = start + limit
     for pattern, before in ((_PARAGRAPH_BREAK, True), (_SENTENCE_END, False), (_CLAUSE_END, False)):
         best = None
@@ -117,19 +117,22 @@ class ContentTransformer:
         return re.sub(r"\n{3,}", "\n\n", "".join(parser.parts)).strip()
 
     @staticmethod
-    def split_into_threads(text: str) -> List[str]:
+    def split_into_threads(text: str, max_length: int | None = None) -> List[str]:
         """Split within the limit, preferring paragraphs and complete sentences."""
-        if len(text) <= ContentTransformer.MAX_BLUESKY_LENGTH:
+        limit = ContentTransformer.MAX_BLUESKY_LENGTH if max_length is None else max_length
+        if type(limit) is not int or limit < 1:
+            raise ValueError("Thread length budget must be a positive integer")
+        if len(text) <= limit:
             return [text]
 
         threads = []
         start = 0
         while start < len(text):
-            if len(text) - start <= ContentTransformer.MAX_BLUESKY_LENGTH:
+            if len(text) - start <= limit:
                 threads.append(text[start:])
                 break
 
-            split_idx = _thread_break_index(text, ContentTransformer.MAX_BLUESKY_LENGTH, start)
+            split_idx = _thread_break_index(text, limit, start)
             threads.append(text[start:split_idx].strip())
             # Keep the original text so quote pairing can see preceding parts.
             start = split_idx

@@ -24,9 +24,17 @@
 </head>
 <body>
     <h1>Masto-BSky Mirror</h1>
+    <p>
+        <label for="destination">Destination</label>
+        <select id="destination">
+            <option value="bluesky">Bluesky</option>
+            <option value="threads">Threads</option>
+        </select>
+    </p>
     <div class="card">
         <h2>System Status</h2>
         <div id="stats">Loading...</div>
+        <p id="threads-connection" class="notice" role="status" aria-live="polite" hidden></p>
         <p id="image-status" class="notice" role="status" aria-live="polite"></p>
         <p id="notice" class="notice" role="status" aria-live="polite"></p>
     </div>
@@ -40,7 +48,9 @@
         </div>
     </div>
     <script>
-        let loading = false;
+        let dashboardRequest = 0;
+        let selectionVersion = 0;
+        const destination = document.getElementById('destination');
         const notice = document.getElementById('notice');
 
         function notify(message, isError = false) {
@@ -65,19 +75,45 @@
             return td;
         }
 
+        function destinationQuery(target) {
+            return target === 'threads' ? '?destination=threads' : '';
+        }
+
+        function showConnection(connection, target) {
+            const element = document.getElementById('threads-connection');
+            element.hidden = target !== 'threads';
+            if (element.hidden) {
+                element.textContent = '';
+                return;
+            }
+            const status = connection || {};
+            const details = [status.enabled ? 'Threads enabled' : 'Threads disabled'];
+            details.push(status.status || (status.configured ? 'Configured' : 'Not configured'));
+            if (status.username) details.push(`@${status.username}`);
+            if (status.account_id) details.push(`Account: ${status.account_id}`);
+            if (status.expires_at) details.push(`Token expires: ${new Date(status.expires_at * 1000).toLocaleString()}`);
+            if (status.error) details.push(status.error);
+            if (status.retry_at) details.push(`Authorization retry after: ${new Date(status.retry_at).toLocaleString()}`);
+            element.textContent = details.join(' | ');
+            element.dataset.error = String(Boolean(status.error));
+        }
+
         async function loadDashboard() {
-            if (loading) return;
-            loading = true;
+            const target = destination.value;
+            const currentRequest = ++dashboardRequest;
+            const query = destinationQuery(target);
             try {
                 const [stats, history] = await Promise.all([
-                    requestJSON('/dashboard/stats'), requestJSON('/dashboard/history')
+                    requestJSON(`/dashboard/stats${query}`), requestJSON(`/dashboard/history${query}`)
                 ]);
+                if (currentRequest !== dashboardRequest || target !== destination.value) return;
                 document.getElementById('stats').textContent =
                     `Synced: ${stats.total_synced} | Failed: ${stats.failed} | Queued: ${stats.queued || 0} | Processing: ${stats.pending || 0} | Success Rate: ${stats.success_rate}`;
                 const images = stats.image_processing;
                 const imageStatus = document.getElementById('image-status');
                 imageStatus.textContent = images && !images.ready ? images.error : '';
                 imageStatus.dataset.error = String(Boolean(images && !images.ready));
+                showConnection(stats.threads_connection, target);
                 const body = document.getElementById('history');
                 body.replaceChildren();
                 for (const entry of history) {
@@ -89,33 +125,48 @@
                     cell(row, entry.synced_at ? new Date(entry.synced_at).toLocaleString() : '—');
                     cell(row, entry.error || '—', 'error');
                     const action = cell(row, '');
-                    if (entry.status === 'failed') {
+                    const retryable = target === 'threads'
+                        ? stats.threads_connection?.enabled && ['failed', 'queued'].includes(entry.status)
+                        : entry.status === 'failed';
+                    if (retryable) {
                         const button = document.createElement('button');
                         button.className = 'btn';
                         button.textContent = 'Retry';
-                        button.addEventListener('click', () => retry(entry.mastodon_id, button));
+                        button.addEventListener('click', () => retry(entry.mastodon_id, button, target));
                         action.appendChild(button);
                     }
                     body.appendChild(row);
                 }
             } catch (error) {
-                notify(error.message, true);
-            } finally {
-                loading = false;
+                if (currentRequest === dashboardRequest && target === destination.value) notify(error.message, true);
             }
         }
 
-        async function retry(id, button) {
+        async function retry(id, button, target = destination.value) {
+            if (target !== destination.value) return;
+            const currentSelection = selectionVersion;
             button.disabled = true;
             try {
-                const result = await requestJSON(`/dashboard/retry/${encodeURIComponent(id)}`, {method: 'POST'});
+                const result = await requestJSON(`/dashboard/retry/${encodeURIComponent(id)}${destinationQuery(target)}`, {method: 'POST'});
+                if (currentSelection !== selectionVersion || target !== destination.value) return;
                 notify(result.message || 'Retry queued.');
                 await loadDashboard();
             } catch (error) {
+                if (currentSelection !== selectionVersion || target !== destination.value) return;
                 notify(error.message, true);
                 button.disabled = false;
             }
         }
+
+        destination.addEventListener('change', () => {
+            selectionVersion++;
+            notify('');
+            document.getElementById('stats').textContent = 'Loading...';
+            document.getElementById('history').replaceChildren();
+            document.getElementById('image-status').textContent = '';
+            showConnection(null, destination.value);
+            return loadDashboard();
+        });
 
         loadDashboard();
         setInterval(loadDashboard, 10000);

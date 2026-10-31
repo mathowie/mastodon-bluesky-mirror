@@ -94,6 +94,22 @@ def test_an_overlong_unbroken_token_makes_progress_without_losing_characters():
     assert all(0 < len(part) <= 300 for part in parts)
 
 
+def test_threads_uses_its_own_budget_without_changing_bluesky():
+    text = ("A longer post stays together on Threads. " * 11).strip()
+    assert ContentTransformer.split_into_threads(text, max_length=500) == [text]
+    assert len(ContentTransformer.split_into_threads(text)) == 2
+
+
+@pytest.mark.parametrize("budget", [0, -1, 2.5, True])
+def test_invalid_thread_budget_is_rejected(budget):
+    with pytest.raises(ValueError):
+        ContentTransformer.split_into_threads("Text", max_length=budget)
+
+
+def test_minimal_thread_budget_always_makes_progress():
+    assert ContentTransformer.split_into_threads('x"y', max_length=1) == ["x", '"', "y"]
+
+
 @pytest.mark.parametrize("quote", ['"', "'"])
 def test_quote_context_is_retained_across_more_than_two_posts(quote):
     text = quote + "word " * 120 + quote + " tail"
